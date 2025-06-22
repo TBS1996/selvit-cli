@@ -321,19 +321,32 @@ impl Input {
         doses
     }
 
-    #[allow(dead_code)]
     fn save(&self) {
-        if let Some(input) = Input::load_all().iter().find(|input| input.id == self.id) {
-            fs::remove_file(&input.path()).unwrap();
-            println!("updating input");
-        } else {
-            println!("saving new input");
-        }
+        let created_new =
+            if let Some(input) = Input::load_all().iter().find(|input| input.id == self.id) {
+                fs::remove_file(&input.path()).unwrap();
+                false
+            } else {
+                true
+            };
 
         let s = toml::to_string(self).unwrap();
         let path = Self::path_dir().join(&self.name);
         let mut f = fs::File::create(&path).unwrap();
         f.write_all(s.as_bytes()).unwrap();
+
+        let op = if created_new {
+            Op::NewInput(self.name.clone())
+        } else {
+            Op::UpdateInput(self.name.clone())
+        };
+
+        match (created_new, git_push(&root_dir(), op)) {
+            (true, Ok(_)) => println!("saved and pushed new input"),
+            (true, Err(_)) => println!("saved new input"),
+            (false, Ok(_)) => println!("updated and pushed input"),
+            (false, Err(_)) => println!(""),
+        }
     }
 
     #[allow(dead_code)]
@@ -414,6 +427,33 @@ struct Log {
     quantity: u32,
 }
 
+fn load_source(source: Uuid) -> Unit {
+    for input in Input::load_all() {
+        match input.ty {
+            InputType::Boolean => continue,
+            InputType::Dosage { units, .. } => {
+                if let Some(unit) = units.into_iter().find(|unit| unit.id == source) {
+                    return unit;
+                }
+            }
+        }
+    }
+
+    panic!()
+}
+
+fn input_from_source(source: Uuid) -> Input {
+    Input::load_all()
+        .into_iter()
+        .find(|input| match input.ty.clone() {
+            InputType::Boolean => false,
+            InputType::Dosage { units, .. } => {
+                units.iter().find(|unit| unit.id == source).is_some()
+            }
+        })
+        .unwrap()
+}
+
 impl Log {
     fn new(source: Uuid, quantity: u32, time: DateTime<Local>) -> Self {
         Self {
@@ -430,11 +470,22 @@ impl Log {
     }
 
     fn save(&self) {
-        println!("saving log");
         let s = toml::to_string(self).unwrap();
         let path = Self::path().join(self.time.to_string());
         let mut f = fs::File::create(&path).unwrap();
         f.write_all(s.as_bytes()).unwrap();
+
+        let op = Op::Log {
+            input: input_from_source(self.source).name,
+            source: load_source(self.source).name,
+            qty: self.quantity as usize,
+        };
+
+        if git_push(&root_dir(), op).is_ok() {
+            println!("saved and pushed log");
+        } else {
+            println!("saved log");
+        }
     }
 
     fn load_all() -> Vec<Self> {
@@ -476,4 +527,81 @@ fn new_day_unix(day: NaiveDate) -> i64 {
     let naive_dt = day.and_time(time);
     let local_dt = Local.from_local_datetime(&naive_dt).unwrap();
     local_dt.timestamp()
+}
+
+use std::path::Path;
+use std::process::Command;
+
+enum Op {
+    NewInput(String),
+    UpdateInput(String),
+    Log {
+        input: String,
+        source: String,
+        qty: usize,
+    },
+}
+
+use std::process::Stdio;
+
+fn git_push(path: &Path, op: Op) -> Result<(), Box<dyn std::error::Error>> {
+    let msg = match op {
+        Op::NewInput(name) => format!("add new input: {name}"),
+        Op::UpdateInput(name) => format!("update input: {name}"),
+        Op::Log { input, source, qty } => format!("logging {qty} {source} for {input}"),
+    };
+
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("add")
+        .arg(".")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    if !status.success() {
+        return Err("git add failed".into());
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("status")
+        .arg("--porcelain")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()?;
+
+    if output.stdout.is_empty() {
+        return Err("nothing to commit".into());
+    }
+
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("commit")
+        .arg("-m")
+        .arg(&msg)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    if !status.success() {
+        return Err("git commit failed".into());
+    }
+
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("push")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    if !status.success() {
+        return Err("git push failed".into());
+    }
+
+    Ok(())
 }
