@@ -1,6 +1,11 @@
+use std::env;
 use std::fs;
+use std::io;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
 use std::str::FromStr;
 
 use alloc::vec::Vec;
@@ -72,7 +77,7 @@ fn unit_dose_bounds(unit: &Unit, dosage: &InputType) -> Option<(u32, u32)> {
     }
 }
 
-fn print_outputs(inputs: &Vec<Input>, day: NaiveDate) {
+fn print_outputs(inputs: &Vec<Input>, day: NaiveDate, show_all: bool) {
     // Step 1: Determine max input name length
     let max_name_len = inputs.iter().map(|i| i.name.len()).max().unwrap_or(0);
     let now = Local::now().time();
@@ -80,7 +85,7 @@ fn print_outputs(inputs: &Vec<Input>, day: NaiveDate) {
     // Step 2: Print each input with padding
     for (idx, input) in inputs.iter().enumerate() {
         if let Some(after) = &input.valid_after {
-            if now < *after {
+            if (now < *after) && !show_all {
                 continue;
             }
         }
@@ -126,15 +131,13 @@ fn print_outputs(inputs: &Vec<Input>, day: NaiveDate) {
     }
 }
 
-fn print_day(day: NaiveDate) {
+fn print_day(day: NaiveDate, show_all: bool) {
     let inputs = Input::load_all();
 
     println!("dosages on date: {day}");
     println!();
-    print_outputs(&inputs, day);
+    print_outputs(&inputs, day, show_all);
 }
-
-use std::env;
 
 fn run() -> Option<()> {
     let mut full_cmd = env::args().collect::<Vec<_>>().into_iter();
@@ -147,7 +150,7 @@ fn run() -> Option<()> {
             let tomorrow = today.checked_add_days(Days::new(1)).unwrap();
 
             for day in [yesterday, today, tomorrow] {
-                print_day(day);
+                print_day(day, false);
                 println!();
                 println!();
             }
@@ -168,7 +171,7 @@ fn run() -> Option<()> {
 
             for i in 0..7 {
                 let day = today.checked_add_days(Days::new(i)).unwrap();
-                print_day(day);
+                print_day(day, false);
                 println!();
                 println!();
             }
@@ -178,7 +181,7 @@ fn run() -> Option<()> {
 
             for i in 0..30 {
                 let day = today.checked_add_days(Days::new(i)).unwrap();
-                print_day(day);
+                print_day(day, false);
                 println!();
                 println!();
             }
@@ -236,10 +239,14 @@ fn run() -> Option<()> {
         Some("refresh") => {
             refresh();
         }
+        Some("all") => {
+            let today = Local::now().date_naive();
+            print_day(today, true);
+        }
         Some(_) => {}
         None => {
             let today = Local::now().date_naive();
-            print_day(today);
+            print_day(today, false);
         }
     }
 
@@ -249,8 +256,6 @@ fn run() -> Option<()> {
 fn main() {
     run();
 }
-
-use std::io;
 
 fn typed_input<T: FromStr>(prompt: &str) -> Option<T> {
     loop {
@@ -529,9 +534,6 @@ fn new_day_unix(day: NaiveDate) -> i64 {
     local_dt.timestamp()
 }
 
-use std::path::Path;
-use std::process::Command;
-
 enum Op {
     NewInput(String),
     UpdateInput(String),
@@ -541,8 +543,6 @@ enum Op {
         qty: usize,
     },
 }
-
-use std::process::Stdio;
 
 fn git_push(path: &Path, op: Op) -> Result<(), Box<dyn std::error::Error>> {
     let msg = match op {
